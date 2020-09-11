@@ -1,4 +1,5 @@
-#!/home/mzamith/Apps/anaconda3/bin/python
+#!/home/mzamith/anaconda3/bin/python
+import difflib
 import requests
 import os
 import timeit
@@ -17,12 +18,12 @@ from subprocess import PIPE, Popen
 
 # authenticate in the server
 def initialize(opt):
-    
+
     if opt.pw == None:
-        try: 
+        try:
             opt.pw = getpass.getpass(prompt='Senha do usuário {}:'.format(opt.name))
-        except Exception as error: 
-            print('ERROR', error) 
+        except Exception as error:
+            print('ERROR', error)
 
     # update problem time in server
     data = {'nameLogin': opt.name,
@@ -88,19 +89,20 @@ def exec(binfile, srcpath, param, mtimeout):
 
     os.chdir(cur_path)
     elapsedtime = b - a
-
+    a_stdout = ''
     print('Executed file:', pprocess.pid, ' elapsedtime: ', elapsedtime, ' in seconds')
     if len(stdout) > 0:
         str_stdout = '\t\t' + stdout.decode('utf-8').replace('\n', '\n\t\t')
         print('\tOUT:')
         print(str_stdout)
+        a_stdout = stdout.decode('utf-8').replace('\n', '')
 
     if len(stderr) > 0:
         str_sterr = '\t\t' + stderr.decode('utf-8').replace('\n', '\n\t\t')
         print('\tERR:')
         print(str_sterr)
 
-    return elapsedtime
+    return elapsedtime, a_stdout
 
 # Compile project in according to created makefile file
 def compile_make(path, clean = False):
@@ -139,6 +141,18 @@ def compile_make(path, clean = False):
 
     return binfile, answer
 
+def equal (file1, file2):
+    count = 0
+    text1 = open(file1).readlines()
+    text2 = open(file2).readlines()
+
+    for line in difflib.unified_diff(text1, text2):
+        count = count + 1
+
+    if count == 0:
+        return ''
+    else:
+        return 'wrong answer'
 # execute job
 def exec_job(opt, job):
 
@@ -152,8 +166,8 @@ def exec_job(opt, job):
 
     # compile and exec original problem if needed
     if float(job['time']) < 0:
-        
-        response = opt.session.get(opt.url + job['path'])
+
+        response = opt.session.get(opt.url + job['file_prob'])
         srczip = os.path.join(tmpdir, 'source.tar.gz')
         with open(srczip, "wb") as f:
             f.write(response.content)
@@ -164,7 +178,7 @@ def exec_job(opt, job):
         binfile, anwser = compile_make(srcpath)
 
         # execute
-        probtime = exec(binfile, srcpath, job['param'], -1)
+        probtime, answer = exec(binfile, srcpath, job['param'], -1)
         # clean tmp folder
         os.remove(srczip)
         shutil.rmtree(srcpath)
@@ -181,13 +195,13 @@ def exec_job(opt, job):
     # compile and exec submission
     response = opt.session.get(opt.url + job['file'])
     srczip = os.path.join(tmpdir, 'source.tar.gz')
-    
+
     with open(srczip, "wb") as f:
         f.write(response.content)
 
 
     shutil.unpack_archive(srczip, tmpdir)
-    
+
     # find src file
     srcpath, answer = find_mkfile(tmpdir)
     if answer != '':
@@ -205,9 +219,30 @@ def exec_job(opt, job):
         return
 
 
+    auxtime, output_created = exec(binfile, srcpath, job['template'], probtime)
+
+    answer = ''
+    if job['stdout'].find('file:') >= 0:
+        file_template =  job['stdout'][5:]
+        files = glob.glob(srcpath + '/*')
+        file_created = max(files, key=os.path.getctime)
+        answer = equal(file_template, file_created)
+    elif job['stdout'].find('stdout:') >= 0 :
+        output_template = job['stdout'][7:]
+        if output_template != output_created:
+            answer = 'wrong answer'
+
+        #print(srcpath)
+    if answer != '':
+        data = {'id': job['id'], 'nameLogin': opt.name, 'namePassed': opt.pw, 'answer': answer}
+        if (opt.verbose): print(data)
+        response = opt.session.post(url=opt.url + 'setsubtime.php', data=data)
+        if (opt.verbose): print(response.text)
+        return
+
 
     # execute
-    subtime = exec(binfile, srcpath, job['param'], probtime)
+    subtime, auxanswer = exec(binfile, srcpath, job['param'], probtime)
 
     os.remove(srczip)
     shutil.rmtree(srcpath)
@@ -227,7 +262,7 @@ def exec_job(opt, job):
 
    # os.rmdir('tmp')
 
-   
+
 
 # main function
 def main():
@@ -243,19 +278,20 @@ def main():
 
     # start session
     opt.session = requests.Session()
-    
+
     # authenticate in the server
-  
+
     #initialize(opt)
     # verify new jobs in loop
     while True:
 
         response = opt.session.get(opt.url + 'getjob.php')
-        
+
+
         if response.ok and response.text != "":
             job = json.loads(response.text)
             if (opt.verbose): print("new_job: ", job)
-            
+
             # execute job
             exec_job(opt, job)
 
@@ -263,10 +299,9 @@ def main():
         sleep(5)
         print('Next')
         #sys.exit(0)
-        
 
-   
+
+
 
 if __name__ == "__main__":
     main()
-
